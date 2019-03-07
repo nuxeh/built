@@ -71,7 +71,8 @@ pub fn strptime(s: &str) -> chrono::DateTime<chrono::offset::Utc> {
         .with_timezone(&chrono::offset::Utc)
 }
 
-/// Retrieves the git-tag or hash describing the exact version.
+/// Retrieves the git-tag or hash describing the exact version and a boolean
+/// that indicates if the repository currently has dirty/staged/untracked files.
 ///
 /// If a valid git-repo can't be discovered at or above the given path,
 /// `Ok(None)` is returned instead of an `Err`-value.
@@ -79,15 +80,27 @@ pub fn strptime(s: &str) -> chrono::DateTime<chrono::offset::Utc> {
 /// # Errors
 /// Errors from `git2` are returned if the repository does exists at all.
 #[cfg(feature = "serialized_git")]
-pub fn get_repo_description<P: AsRef<path::Path>>(root: P) -> Result<Option<String>, git2::Error> {
+pub fn get_repo_description<P: AsRef<path::Path>>(
+    root: P,
+) -> Result<Option<(String, bool)>, git2::Error> {
     match git2::Repository::discover(root) {
         Ok(repo) => {
             let mut desc_opt = git2::DescribeOptions::new();
             desc_opt.describe_tags().show_commit_oid_as_fallback(true);
-            Ok(Some(
-                repo.describe(&desc_opt)
-                    .and_then(|desc| desc.format(None))?,
-            ))
+            let tag = repo
+                .describe(&desc_opt)
+                .and_then(|desc| desc.format(None))?;
+            let mut st_opt = git2::StatusOptions::new();
+            st_opt.include_ignored(false);
+            st_opt.include_untracked(true);
+            let dirty = repo.statuses(Some(&mut st_opt))?.iter().any(|status| {
+                dbg!((&status.path(), &status.status()));
+                match status.status() {
+                    git2::Status::CURRENT => false,
+                    _ => true,
+                }
+            });
+            Ok(Some((tag, dirty)))
         }
         Err(ref e)
             if e.class() == git2::ErrorClass::Repository

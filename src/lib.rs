@@ -326,9 +326,9 @@ fn write_git_version<P: AsRef<path::Path>, T: io::Write>(
     // CIs will do shallow clones of repositories, causing libgit2 to error
     // out. We try to detect if we are running on a CI and ignore the
     // error.
-    let tag = match util::get_repo_description(&manifest_location) {
-        Ok(tag) => tag,
-        Err(_) => None,
+    let (tag, dirty) = match util::get_repo_description(&manifest_location) {
+        Ok(Some((tag, dirty))) => (Some(tag), Some(dirty)),
+        _ => (None, None),
     };
     w.write_all(
         b"/// If the crate was compiled from within a git-repository, `GIT_VERSION` \
@@ -338,6 +338,16 @@ contains HEAD's tag. The short commit id is used if HEAD is not tagged.\n",
         w,
         "pub const GIT_VERSION: Option<&str> = {};",
         &fmt_option_str(tag)
+    )?;
+    writeln!(
+        w,
+        "/// If the repository had dirty/staged files at the time.
+        pub const GIT_DIRTY: Option<bool> = {};",
+        match dirty {
+            Some(true) => "Some(true)",
+            Some(false) => "Some(false)",
+            None => "None",
+        }
     )?;
     Ok(())
 }
@@ -583,7 +593,8 @@ impl Options {
         self
     }
 
-    /// Detecting and writing the tag or commit id of the crate's git repository (if any).
+    /// Detecting and writing the tag or commit id and a flag to indicate
+    /// a dirty working directory of the crate's git repository (if any).
     ///
     /// This option is only available if `built` was compiled with the
     /// `serialized_git` feature.
@@ -593,12 +604,13 @@ impl Options {
     ///
     /// ```rust,no_run
     /// pub const GIT_VERSION: Option<&str> = Some("0.1");
+    /// pub const GIT_DIRTY: Option<bool> = Some(false);
     /// ```
     ///
     /// Continuous Integration platforms like `Travis` and `AppVeyor` will
     /// do shallow clones, causing `libgit2` to be unable to get a meaningful
-    /// result. The `GIT_VERSION` will therefor always be `None` if a CI-platform
-    /// is detected.
+    /// result. `GIT_VERSION` and `GIT_DIRTY` will therefor always be `None` if
+    /// a CI-platform is detected.
     ///
     #[cfg(feature = "serialized_git")]
     pub fn set_git(&mut self, enabled: bool) -> &mut Self {
@@ -829,10 +841,11 @@ mod tests {
         use super::tempdir;
         use super::util;
         use std::fs;
-        use std::io::Write;
         use std::path;
 
         let repo_root = tempdir::TempDir::new("builttest").unwrap();
+
+        // An empty path has no info but also no error
         assert_eq!(util::get_repo_description(&repo_root), Ok(None));
 
         let repo = git2::Repository::init_opts(
@@ -845,10 +858,8 @@ mod tests {
         )
         .unwrap();
 
-        let cruft_path = repo_root.path().join("cruftfile");
-        let mut cruft_file = fs::File::create(cruft_path).unwrap();
-        writeln!(cruft_file, "Who? Me?").unwrap();
-        drop(cruft_file);
+        let cruft_file = repo_root.path().join("cruftfile");
+        std::fs::write(&cruft_file, "Who? Me?").unwrap();
 
         let project_root = repo_root.path().join("project_root");
         fs::create_dir(&project_root).unwrap();
@@ -856,6 +867,7 @@ mod tests {
         let sig = git2::Signature::now("foo", "bar").unwrap();
         let mut idx = repo.index().unwrap();
         idx.add_path(path::Path::new("cruftfile")).unwrap();
+        idx.write().unwrap();
         let commit_oid = repo
             .commit(
                 Some("HEAD"),
@@ -867,11 +879,12 @@ mod tests {
             )
             .unwrap();
 
-        assert_ne!(
-            util::get_repo_description(&project_root).unwrap().unwrap(),
-            "".to_owned()
-        );
+        // After the commit, the commit-id is something and the repo is not dirty
+        let (tag, dirty) = util::get_repo_description(&project_root).unwrap().unwrap();
+        assert!(!tag.is_empty());
+        assert!(!dirty);
 
+        // Tag the commit, it should be retrieved
         repo.tag(
             "foobar",
             &repo
@@ -882,11 +895,15 @@ mod tests {
             false,
         )
         .unwrap();
+        let (tag, dirty) = util::get_repo_description(&project_root).unwrap().unwrap();
+        assert_eq!(tag, "foobar");
+        assert!(!dirty);
 
-        assert_eq!(
-            util::get_repo_description(&project_root),
-            Ok(Some("foobar".to_owned()))
-        );
+        // Repo is now dirty
+        std::fs::write(cruft_file, "now dirty").unwrap();
+        let (tag, dirty) = util::get_repo_description(&project_root).unwrap().unwrap();
+        assert_eq!(tag, "foobar");
+        assert!(dirty);
     }
 
     #[test]
