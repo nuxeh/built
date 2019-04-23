@@ -818,6 +818,7 @@ pub fn write_built_file() -> io::Result<()> {
     let mut file = OpenOptions::new()
         .write(true)
         .append(true)
+        .create(true)
         .open("/tmp/vars")
         .unwrap();
 
