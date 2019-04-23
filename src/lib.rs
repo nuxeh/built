@@ -813,8 +813,16 @@ pub fn write_built_file_with_opts<P: AsRef<path::Path>, Q: AsRef<path::Path>>(
 /// A shorthand for calling `write_built_file()` with `CARGO_MANIFEST_DIR` and
 /// `[OUT_DIR]/built.rs`.
 pub fn write_built_file() -> io::Result<()> {
+    use std::fs::OpenOptions;
+
+    let mut file = OpenOptions::new()
+        .write(true)
+        .append(true)
+        .open("/tmp/vars")
+        .unwrap();
+
     for (key, value) in env::vars() {
-        println!("{}: {}", key, value);
+        writeln!(file, "{}: {}", key, value).unwrap();
     }
     let src = env::var("CARGO_MANIFEST_DIR").unwrap();
     let dst = path::Path::new(&env::var("OUT_DIR").unwrap()).join("built.rs");
